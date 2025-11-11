@@ -150,25 +150,31 @@ http.ListenAndServe(":8080", wrappedMux)
 
 ```go
 db, _ := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-sdk.WrapGorm(db) // ← All queries automatically traced!
+sdk.TraceGormDB(db) // ← All queries automatically traced!
 
 // Now every Find(), Create(), Update() is traced
 db.Find(&users)
+db.Create(&User{Name: "John"})
+db.Where("age > ?", 18).Find(&users)
 ```
 
-#### database/sql with pgx
+#### database/sql (PostgreSQL, MySQL, SQLite, etc.)
 
 ```go
-import "github.com/jackc/pgx/v5/stdlib"
+import (
+    "database/sql"
+    _ "github.com/lib/pq" // PostgreSQL driver
+)
 
-// Register instrumented driver
-driverName, _ := sdk.WrapDatabaseDriver("pgx", tracekit.DriverPostgreSQL)
+// Open standard database/sql connection
+sqlDB, _ := sql.Open("postgres", "postgresql://user:pass@localhost/mydb")
 
-// Use instrumented driver
-db, _ := sql.Open(driverName, dsn)
+// Wrap with tracing
+db := sdk.WrapDB(sqlDB, "postgresql")
 
 // All queries automatically traced!
-db.Query("SELECT * FROM users")
+rows, _ := db.QueryContext(ctx, "SELECT * FROM users WHERE age > $1", 18)
+result, _ := db.ExecContext(ctx, "INSERT INTO users (name) VALUES ($1)", "John")
 ```
 
 ### 4. Instrument Redis (One Line!)
