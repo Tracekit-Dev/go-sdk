@@ -70,6 +70,11 @@ func (s *SDK) SetSuccessWithMessage(span trace.Span, message string) {
 	span.SetStatus(codes.Ok, message)
 }
 
+// SetError marks a span as error with a message (without recording an error object)
+func (s *SDK) SetError(span trace.Span, message string) {
+	span.SetStatus(codes.Error, message)
+}
+
 // Helper functions for common attribute patterns
 
 // AddHTTPAttributes adds common HTTP attributes to a span
