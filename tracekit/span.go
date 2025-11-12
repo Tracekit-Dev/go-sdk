@@ -3,6 +3,8 @@ package tracekit
 import (
 	"context"
 	"fmt"
+	"runtime"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -44,12 +46,51 @@ func (s *SDK) AddEvent(span trace.Span, name string, attrs ...attribute.KeyValue
 	span.AddEvent(name, trace.WithAttributes(attrs...))
 }
 
-// RecordError records an error on a span and marks it as error
+// RecordError records an error on a span with stack trace and marks it as error
 func (s *SDK) RecordError(span trace.Span, err error) {
 	if err != nil {
+		// Capture stack trace
+		stacktrace := captureStackTrace(3) // skip 3 frames: runtime.Callers, captureStackTrace, RecordError
+		
+		// Record error with stack trace as an event
+		span.AddEvent("exception", trace.WithAttributes(
+			attribute.String("exception.type", fmt.Sprintf("%T", err)),
+			attribute.String("exception.message", err.Error()),
+			attribute.String("exception.stacktrace", stacktrace),
+		))
+		
+		// Also use OpenTelemetry's built-in error recording
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
+}
+
+// captureStackTrace captures the current call stack
+func captureStackTrace(skip int) string {
+	const maxStackSize = 32
+	pc := make([]uintptr, maxStackSize)
+	n := runtime.Callers(skip, pc)
+	
+	if n == 0 {
+		return ""
+	}
+	
+	pc = pc[:n]
+	frames := runtime.CallersFrames(pc)
+	
+	var sb strings.Builder
+	for {
+		frame, more := frames.Next()
+		
+		// Format: function_name (file:line)
+		sb.WriteString(fmt.Sprintf("%s\n\t%s:%d\n", frame.Function, frame.File, frame.Line))
+		
+		if !more {
+			break
+		}
+	}
+	
+	return sb.String()
 }
 
 // RecordErrorWithMessage records an error with a custom message
