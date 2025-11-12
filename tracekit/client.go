@@ -218,7 +218,8 @@ func (c *SnapshotClient) CheckAndCapture(filePath string, lineNumber int, variab
 // label: optional stable identifier for the checkpoint
 func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, label string, variables map[string]interface{}) {
 	// Get caller information automatically
-	pc, file, line, ok := runtime.Caller(1)
+	// Skip 2 frames: this function + SDK wrapper (config.go)
+	pc, file, line, ok := runtime.Caller(2)
 	if !ok {
 		return
 	}
