@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"runtime"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SnapshotClient handles code monitoring snapshots
@@ -194,8 +196,57 @@ func (c *SnapshotClient) CheckAndCapture(filePath string, lineNumber int, variab
 
 // CheckAndCaptureWithContext checks and captures with trace context
 func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, filePath string, lineNumber int, variables map[string]interface{}) {
-	// TODO: Extract trace/span ID from OpenTelemetry context
-	c.CheckAndCapture(filePath, lineNumber, variables)
+	// Check cache for matching breakpoint
+	key := fmt.Sprintf("%s:%d", filePath, lineNumber)
+	bp, exists := c.breakpointsCache[key]
+
+	if !exists {
+		return // No active breakpoint at this location
+	}
+
+	// Check if breakpoint has expired
+	if bp.ExpireAt != nil && time.Now().After(*bp.ExpireAt) {
+		return
+	}
+
+	// Check if max captures reached
+	if bp.MaxCaptures > 0 && bp.CaptureCount >= bp.MaxCaptures {
+		return
+	}
+
+	// Capture stack trace
+	buf := make([]byte, 4096)
+	n := runtime.Stack(buf, false)
+	stackTrace := string(buf[:n])
+
+	// Extract trace/span IDs from OpenTelemetry context
+	traceID := ""
+	spanID := ""
+	span := trace.SpanFromContext(ctx)
+	if span.SpanContext().IsValid() {
+		traceID = span.SpanContext().TraceID().String()
+		spanID = span.SpanContext().SpanID().String()
+	}
+
+	// Extract HTTP request context if available
+	requestContext := c.extractRequestContext(ctx)
+
+	// Create snapshot
+	snapshot := Snapshot{
+		BreakpointID:   bp.ID,
+		ServiceName:    c.serviceName,
+		FilePath:       filePath,
+		LineNumber:     lineNumber,
+		Variables:      variables,
+		StackTrace:     stackTrace,
+		TraceID:        traceID,
+		SpanID:         spanID,
+		RequestContext: requestContext,
+		CapturedAt:     time.Now(),
+	}
+
+	// Send snapshot to backend (non-blocking)
+	go c.captureSnapshot(snapshot)
 }
 
 // captureSnapshot sends the snapshot to the backend
@@ -230,4 +281,15 @@ func (c *SnapshotClient) captureSnapshot(snapshot Snapshot) {
 	}
 
 	log.Printf("📸 Snapshot captured: %s:%d", snapshot.FilePath, snapshot.LineNumber)
+}
+
+// extractRequestContext extracts HTTP request details from context
+func (c *SnapshotClient) extractRequestContext(ctx context.Context) map[string]interface{} {
+	// Try to extract request context stored by middleware
+	if reqCtx := ctx.Value(contextKey("tracekit.request_context")); reqCtx != nil {
+		if rc, ok := reqCtx.(map[string]interface{}); ok {
+			return rc
+		}
+	}
+	return nil
 }
