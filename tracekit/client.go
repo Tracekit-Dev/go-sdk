@@ -63,12 +63,13 @@ type Snapshot struct {
 // NewSnapshotClient creates a new snapshot client
 func NewSnapshotClient(apiKey, baseURL, serviceName string) *SnapshotClient {
 	return &SnapshotClient{
-		apiKey:           apiKey,
-		baseURL:          baseURL,
-		serviceName:      serviceName,
-		client:           &http.Client{Timeout: 10 * time.Second},
-		stopChan:         make(chan struct{}),
-		breakpointsCache: make(map[string]*BreakpointConfig),
+		apiKey:            apiKey,
+		baseURL:           baseURL,
+		serviceName:       serviceName,
+		client:            &http.Client{Timeout: 10 * time.Second},
+		stopChan:          make(chan struct{}),
+		breakpointsCache:  make(map[string]*BreakpointConfig),
+		registrationCache: make(map[string]bool),
 	}
 }
 
