@@ -206,6 +206,13 @@ func (s *SDK) SnapshotClient() *SnapshotClient {
 	return s.snapshotClient
 }
 
+// CheckAndCapture checks if there's a breakpoint and captures a snapshot
+func (s *SDK) CheckAndCapture(filePath string, lineNumber int, variables map[string]interface{}) {
+	if s.snapshotClient != nil {
+		s.snapshotClient.CheckAndCapture(filePath, lineNumber, variables)
+	}
+}
+
 // Shutdown gracefully shuts down the SDK
 func (s *SDK) Shutdown(ctx context.Context) error {
 	if s.snapshotClient != nil {
