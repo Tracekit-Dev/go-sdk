@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +35,8 @@ type BreakpointConfig struct {
 	ID           string                 `json:"id"`
 	ServiceName  string                 `json:"service_name"`
 	FilePath     string                 `json:"file_path"`
+	FunctionName string                 `json:"function_name"`
+	Label        string                 `json:"label,omitempty"` // Stable identifier
 	LineNumber   int                    `json:"line_number"`
 	Condition    string                 `json:"condition,omitempty"`
 	MaxCaptures  int                    `json:"max_captures"`
@@ -143,13 +146,21 @@ func (c *SnapshotClient) fetchActiveBreakpoints() error {
 func (c *SnapshotClient) updateBreakpointCache(breakpoints []BreakpointConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	newCache := make(map[string]*BreakpointConfig)
 
 	for i := range breakpoints {
 		bp := &breakpoints[i]
-		key := fmt.Sprintf("%s:%d", bp.FilePath, bp.LineNumber)
-		newCache[key] = bp
+
+		// Primary key: function + label (stable)
+		if bp.Label != "" && bp.FunctionName != "" {
+			labelKey := fmt.Sprintf("%s:%s", bp.FunctionName, bp.Label)
+			newCache[labelKey] = bp
+		}
+
+		// Secondary key: file + line (for backwards compatibility)
+		lineKey := fmt.Sprintf("%s:%d", bp.FilePath, bp.LineNumber)
+		newCache[lineKey] = bp
 	}
 
 	c.breakpointsCache = newCache
@@ -203,7 +214,8 @@ func (c *SnapshotClient) CheckAndCapture(filePath string, lineNumber int, variab
 
 // CheckAndCaptureWithContext checks and captures with trace context
 // It automatically registers the breakpoint location on first call
-func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, variables map[string]interface{}) {
+// label: optional stable identifier for the checkpoint
+func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, label string, variables map[string]interface{}) {
 	// Get caller information automatically
 	pc, file, line, ok := runtime.Caller(1)
 	if !ok {
@@ -213,13 +225,30 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, variabl
 	// Get function name
 	funcName := runtime.FuncForPC(pc).Name()
 
+	// Auto-generate label if not provided
+	if label == "" {
+		// Extract last part of function name (e.g., "main.processPayment" -> "processPayment")
+		parts := strings.Split(funcName, ".")
+		label = parts[len(parts)-1]
+	}
+
 	// Auto-register or update breakpoint
-	key := fmt.Sprintf("%s:%d", file, line)
-	c.autoRegisterBreakpoint(file, line, funcName)
-	
-	// Check cache for matching breakpoint
+	c.autoRegisterBreakpoint(file, line, funcName, label)
+
+	// Check cache for matching breakpoint (try label first, then line)
 	c.mu.RLock()
-	bp, exists := c.breakpointsCache[key]
+	var bp *BreakpointConfig
+	var exists bool
+
+	// Primary: Match by function + label
+	labelKey := fmt.Sprintf("%s:%s", funcName, label)
+	bp, exists = c.breakpointsCache[labelKey]
+
+	// Fallback: Match by file + line
+	if !exists {
+		lineKey := fmt.Sprintf("%s:%d", file, line)
+		bp, exists = c.breakpointsCache[lineKey]
+	}
 	c.mu.RUnlock()
 
 	if !exists || !bp.Enabled {
@@ -272,15 +301,17 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, variabl
 }
 
 // autoRegisterBreakpoint automatically creates or updates a breakpoint
-func (c *SnapshotClient) autoRegisterBreakpoint(file string, line int, funcName string) {
-	key := fmt.Sprintf("%s:%d", file, line)
+func (c *SnapshotClient) autoRegisterBreakpoint(file string, line int, funcName string, label string) {
+	// Use label as primary key for registration tracking
+	regKey := fmt.Sprintf("%s:%s", funcName, label)
 
 	// Check if we've already registered this location
 	c.mu.Lock()
-	if _, exists := c.breakpointsCache[key]; exists {
+	if c.registrationCache[regKey] {
 		c.mu.Unlock()
 		return
 	}
+	c.registrationCache[regKey] = true
 	c.mu.Unlock()
 
 	// Auto-register with backend (non-blocking)
@@ -292,6 +323,7 @@ func (c *SnapshotClient) autoRegisterBreakpoint(file string, line int, funcName 
 			"file_path":     file,
 			"line_number":   line,
 			"function_name": funcName,
+			"label":         label,
 		}
 
 		body, _ := json.Marshal(payload)

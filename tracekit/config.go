@@ -215,9 +215,13 @@ func (s *SDK) CheckAndCapture(filePath string, lineNumber int, variables map[str
 
 // CheckAndCaptureWithContext is a wrapper for code monitoring snapshot capture with context
 // It automatically registers the breakpoint location - no need to manually create breakpoints!
-func (s *SDK) CheckAndCaptureWithContext(ctx context.Context, variables map[string]interface{}) {
+//
+// label: Optional stable identifier (e.g. "payment-error", "auth-check")
+//
+//	If empty, uses auto-generated label based on function name
+func (s *SDK) CheckAndCaptureWithContext(ctx context.Context, label string, variables map[string]interface{}) {
 	if s.snapshotClient != nil {
-		s.snapshotClient.CheckAndCaptureWithContext(ctx, variables)
+		s.snapshotClient.CheckAndCaptureWithContext(ctx, label, variables)
 	}
 }
 
