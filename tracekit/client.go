@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -22,8 +23,10 @@ type SnapshotClient struct {
 	stopChan    chan struct{}
 
 	// Cache of active breakpoints
-	breakpointsCache map[string]*BreakpointConfig
-	lastFetch        time.Time
+	breakpointsCache  map[string]*BreakpointConfig
+	lastFetch         time.Time
+	registrationCache map[string]bool // Track registered locations
+	mu                sync.RWMutex    // Protects caches
 }
 
 // BreakpointConfig represents a breakpoint configuration
@@ -36,6 +39,7 @@ type BreakpointConfig struct {
 	MaxCaptures  int                    `json:"max_captures"`
 	CaptureCount int                    `json:"capture_count"`
 	ExpireAt     *time.Time             `json:"expire_at,omitempty"`
+	Enabled      bool                   `json:"enabled"`
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -137,6 +141,9 @@ func (c *SnapshotClient) fetchActiveBreakpoints() error {
 
 // updateBreakpointCache updates the in-memory cache of breakpoints
 func (c *SnapshotClient) updateBreakpointCache(breakpoints []BreakpointConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
 	newCache := make(map[string]*BreakpointConfig)
 
 	for i := range breakpoints {
@@ -195,12 +202,27 @@ func (c *SnapshotClient) CheckAndCapture(filePath string, lineNumber int, variab
 }
 
 // CheckAndCaptureWithContext checks and captures with trace context
-func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, filePath string, lineNumber int, variables map[string]interface{}) {
-	// Check cache for matching breakpoint
-	key := fmt.Sprintf("%s:%d", filePath, lineNumber)
-	bp, exists := c.breakpointsCache[key]
+// It automatically registers the breakpoint location on first call
+func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, variables map[string]interface{}) {
+	// Get caller information automatically
+	pc, file, line, ok := runtime.Caller(1)
+	if !ok {
+		return
+	}
 
-	if !exists {
+	// Get function name
+	funcName := runtime.FuncForPC(pc).Name()
+
+	// Auto-register or update breakpoint
+	key := fmt.Sprintf("%s:%d", file, line)
+	c.autoRegisterBreakpoint(file, line, funcName)
+	
+	// Check cache for matching breakpoint
+	c.mu.RLock()
+	bp, exists := c.breakpointsCache[key]
+	c.mu.RUnlock()
+
+	if !exists || !bp.Enabled {
 		return // No active breakpoint at this location
 	}
 
@@ -235,8 +257,8 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, filePat
 	snapshot := Snapshot{
 		BreakpointID:   bp.ID,
 		ServiceName:    c.serviceName,
-		FilePath:       filePath,
-		LineNumber:     lineNumber,
+		FilePath:       file,
+		LineNumber:     line,
 		Variables:      variables,
 		StackTrace:     stackTrace,
 		TraceID:        traceID,
@@ -247,6 +269,52 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, filePat
 
 	// Send snapshot to backend (non-blocking)
 	go c.captureSnapshot(snapshot)
+}
+
+// autoRegisterBreakpoint automatically creates or updates a breakpoint
+func (c *SnapshotClient) autoRegisterBreakpoint(file string, line int, funcName string) {
+	key := fmt.Sprintf("%s:%d", file, line)
+
+	// Check if we've already registered this location
+	c.mu.Lock()
+	if _, exists := c.breakpointsCache[key]; exists {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+
+	// Auto-register with backend (non-blocking)
+	go func() {
+		url := fmt.Sprintf("%s/sdk/snapshots/auto-register", c.baseURL)
+
+		payload := map[string]interface{}{
+			"service_name":  c.serviceName,
+			"file_path":     file,
+			"line_number":   line,
+			"function_name": funcName,
+		}
+
+		body, _ := json.Marshal(payload)
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+		if err != nil {
+			return
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", c.apiKey)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+
+		// Refresh breakpoints cache after registration
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+			time.Sleep(500 * time.Millisecond) // Small delay for backend processing
+			c.fetchActiveBreakpoints()
+		}
+	}()
 }
 
 // captureSnapshot sends the snapshot to the backend
