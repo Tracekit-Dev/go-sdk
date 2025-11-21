@@ -52,6 +52,11 @@ type Config struct {
 
 	// Optional - batch timeout (default: 5s)
 	BatchTimeout time.Duration
+
+	// Optional - map hostnames to service names for peer.service attribute
+	// Useful for mapping localhost URLs to actual service names
+	// Example: map[string]string{"localhost:8084": "node-test-app", "localhost:8082": "go-test-app"}
+	ServiceNameMappings map[string]string
 }
 
 // SDK is the main TraceKit SDK client

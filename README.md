@@ -217,9 +217,15 @@ client := sdk.HTTPClient(&http.Client{
     Timeout: 10 * time.Second,
 })
 
-// All outgoing requests automatically traced!
-resp, _ := client.Get("https://api.example.com/data")
+// All outgoing requests automatically traced with CLIENT spans!
+resp, _ := client.Get("http://payment-service/charge")
 ```
+
+**What This Does:**
+- Creates **CLIENT spans** for all outgoing HTTP requests
+- Automatically sets `peer.service` attribute for service discovery
+- Injects trace context headers (`traceparent`) for distributed tracing
+- Links requests across services in the trace flamegraph
 
 ### 7. Instrument gRPC
 
@@ -239,6 +245,109 @@ server := grpc.NewServer(
 conn, _ := grpc.Dial("localhost:50051",
     sdk.GRPCClientInterceptors()..., // ← All calls automatically traced
 )
+```
+
+---
+
+## Automatic Service Discovery
+
+TraceKit automatically maps service-to-service dependencies when you use `sdk.HTTPClient()` to wrap your HTTP clients.
+
+### How It Works
+
+When your service makes an HTTP request using a wrapped client:
+
+1. ✅ TraceKit creates a **CLIENT span** for the outgoing request
+2. ✅ Trace context is injected into request headers (`traceparent`)
+3. ✅ `peer.service` attribute is set based on the target hostname
+4. ✅ The receiving service creates a **SERVER span** linked to your CLIENT span
+5. ✅ TraceKit maps the dependency: **YourService → TargetService**
+
+### Service Name Detection
+
+TraceKit intelligently extracts service names from URLs:
+
+| URL | Extracted Service Name |
+|-----|------------------------|
+| `http://payment-service:3000` | `payment-service` |
+| `http://payment.internal` | `payment` |
+| `http://payment.svc.cluster.local` | `payment` |
+| `https://api.example.com` | `api.example.com` |
+
+### Example
+
+```go
+// Wrap your HTTP client
+client := sdk.HTTPClient(&http.Client{Timeout: 10 * time.Second})
+
+// Make requests - automatically creates CLIENT spans
+resp, _ := client.Get("http://payment-service/charge")
+// -> Creates CLIENT span with peer.service = "payment-service"
+
+resp, _ := client.Get("http://inventory.internal/check")
+// -> Creates CLIENT span with peer.service = "inventory"
+
+resp, _ := client.Get("http://users.svc.cluster.local/profile/123")
+// -> Creates CLIENT span with peer.service = "users"
+```
+
+### Viewing Service Dependencies
+
+Visit your TraceKit dashboard to see:
+
+- **Service Map**: Visual graph showing which services call which
+- **Service List**: Table of all services with health metrics and error rates
+- **Service Detail**: Upstream/downstream dependencies with latency and error info
+
+### Custom Service Name Mappings
+
+For local development or when service names can't be inferred from hostnames, use `ServiceNameMappings`:
+
+```go
+sdk, _ := tracekit.NewSDK(&tracekit.Config{
+    APIKey:      os.Getenv("TRACEKIT_API_KEY"),
+    ServiceName: "my-service",
+    // Map localhost URLs to actual service names
+    ServiceNameMappings: map[string]string{
+        "localhost:8082": "payment-service",
+        "localhost:8083": "user-service",
+        "localhost:8084": "inventory-service",
+        "localhost:5001": "analytics-service",
+    },
+})
+
+// Now requests to localhost:8082 will show as "payment-service" in the service graph
+client := sdk.HTTPClient(nil)
+resp, _ := client.Get("http://localhost:8082/charge")
+// -> Creates CLIENT span with peer.service = "payment-service"
+```
+
+This is especially useful when:
+- Running microservices locally on different ports
+- Using Docker Compose with localhost networking
+- Testing distributed tracing in development
+
+### Multiple HTTP Clients
+
+You can wrap multiple HTTP clients for different purposes:
+
+```go
+// Internal microservices
+internalClient := sdk.HTTPClient(&http.Client{
+    Timeout: 5 * time.Second,
+})
+
+// External APIs
+externalClient := sdk.HTTPClient(&http.Client{
+    Timeout: 30 * time.Second,
+    Transport: &http.Transport{
+        MaxIdleConns: 100,
+    },
+})
+
+// Both are automatically instrumented!
+internalClient.Get("http://payment-service/charge")
+externalClient.Get("https://api.stripe.com/charges")
 ```
 
 ---
@@ -443,7 +552,7 @@ sdk, err := tracekit.NewSDK(&tracekit.Config{
     // Required
     APIKey:      "your-api-key",
     ServiceName: "my-service",
-    
+
     // Optional - defaults
     Endpoint:                   "app.tracekit.dev",     // TraceKit endpoint
     UseSSL:                     true,                   // Use HTTPS
@@ -453,6 +562,13 @@ sdk, err := tracekit.NewSDK(&tracekit.Config{
     BatchTimeout:               5 * time.Second,        // Batch export interval
     EnableCodeMonitoring:       false,                  // Enable live debugging
     CodeMonitoringPollInterval: 30 * time.Second,       // Breakpoint poll interval
+
+    // Service Discovery - map hostnames to service names for service graph
+    ServiceNameMappings: map[string]string{
+        "localhost:8082": "payment-service",
+        "localhost:8083": "user-service",
+    },
+
     ResourceAttributes: map[string]string{
         "host.name": "server-01",
         "region":    "us-east-1",
