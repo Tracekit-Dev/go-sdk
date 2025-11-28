@@ -49,7 +49,8 @@ func (h *redisHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		)
 
 		err := next(ctx, cmd)
-		if err != nil {
+		// redis.Nil is not an error - it just means "key not found" or "no data"
+		if err != nil && err != redis.Nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		} else {
@@ -71,7 +72,8 @@ func (h *redisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Pr
 		)
 
 		err := next(ctx, cmds)
-		if err != nil {
+		// redis.Nil is not an error - it just means "key not found" or "no data"
+		if err != nil && err != redis.Nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		} else {
