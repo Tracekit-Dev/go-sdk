@@ -1,10 +1,14 @@
 package tracekit
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -65,6 +69,111 @@ type SDK struct {
 	tracer         trace.Tracer
 	tracerProvider *sdktrace.TracerProvider
 	snapshotClient *SnapshotClient
+	localUIEnabled bool
+}
+
+// detectLocalUI checks if TraceKit Local UI is running
+func detectLocalUI() bool {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Get("http://localhost:9999/api/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// localUISpanProcessor is a custom span processor that sends traces to local UI
+type localUISpanProcessor struct {
+	client *http.Client
+}
+
+// newLocalUISpanProcessor creates a new local UI span processor
+func newLocalUISpanProcessor() *localUISpanProcessor {
+	return &localUISpanProcessor{
+		client: &http.Client{Timeout: 1 * time.Second},
+	}
+}
+
+// OnStart is called when a span starts (no-op for our use case)
+func (p *localUISpanProcessor) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {}
+
+// OnEnd is called when a span ends - sends to local UI in a goroutine
+func (p *localUISpanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
+	// Only send in development environment
+	if os.Getenv("ENV") != "development" {
+		return
+	}
+
+	// Send to local UI in background (non-blocking)
+	go func() {
+		// Convert span to OTLP format (simplified)
+		// The actual OTLP exporter handles the full conversion
+		// For local UI, we'll send a simplified payload
+		payload := map[string]interface{}{
+			"resourceSpans": []map[string]interface{}{
+				{
+					"scopeSpans": []map[string]interface{}{
+						{
+							"spans": []map[string]interface{}{
+								{
+									"traceId":           s.SpanContext().TraceID().String(),
+									"spanId":            s.SpanContext().SpanID().String(),
+									"parentSpanId":      s.Parent().SpanID().String(),
+									"name":              s.Name(),
+									"kind":              s.SpanKind(),
+									"startTimeUnixNano": s.StartTime().UnixNano(),
+									"endTimeUnixNano":   s.EndTime().UnixNano(),
+									"attributes":        convertAttributes(s.Attributes()),
+									"status":            map[string]interface{}{"code": s.Status().Code},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return
+		}
+
+		req, err := http.NewRequest("POST", "http://localhost:9999/v1/traces", bytes.NewBuffer(body))
+		if err != nil {
+			return
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := p.client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			log.Println("🔍 Sent to Local UI")
+		}
+	}()
+}
+
+// Shutdown is called when the processor is shutting down
+func (p *localUISpanProcessor) Shutdown(ctx context.Context) error {
+	return nil
+}
+
+// ForceFlush is called to force flush pending spans
+func (p *localUISpanProcessor) ForceFlush(ctx context.Context) error {
+	return nil
+}
+
+// convertAttributes converts OTEL attributes to a simple map
+func convertAttributes(attrs []attribute.KeyValue) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(attrs))
+	for _, attr := range attrs {
+		result = append(result, map[string]interface{}{
+			"key":   string(attr.Key),
+			"value": map[string]interface{}{"stringValue": attr.Value.AsString()},
+		})
+	}
+	return result
 }
 
 // NewSDK creates and initializes the TraceKit SDK
@@ -98,6 +207,14 @@ func NewSDK(config *Config) (*SDK, error) {
 
 	sdk := &SDK{
 		config: config,
+	}
+
+	// Detect local UI in development mode
+	if os.Getenv("ENV") == "development" {
+		if detectLocalUI() {
+			sdk.localUIEnabled = true
+			log.Println("🔍 Local UI detected at http://localhost:9999")
+		}
 	}
 
 	// Initialize tracer
@@ -180,13 +297,21 @@ func (s *SDK) initTracer() error {
 	// Create tracer provider with sampling
 	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(s.config.SamplingRate))
 
-	s.tracerProvider = sdktrace.NewTracerProvider(
+	// Prepare tracer provider options
+	tpOptions := []sdktrace.TracerProviderOption{
 		sdktrace.WithBatcher(exporter,
 			sdktrace.WithBatchTimeout(s.config.BatchTimeout),
 		),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler),
-	)
+	}
+
+	// Add local UI span processor if enabled
+	if s.localUIEnabled {
+		tpOptions = append(tpOptions, sdktrace.WithSpanProcessor(newLocalUISpanProcessor()))
+	}
+
+	s.tracerProvider = sdktrace.NewTracerProvider(tpOptions...)
 
 	// Set global providers
 	otel.SetTracerProvider(s.tracerProvider)
