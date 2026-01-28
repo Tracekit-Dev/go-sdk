@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -46,6 +47,13 @@ type BreakpointConfig struct {
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
+// SecurityFlag represents a security issue found in snapshot variables
+type SecurityFlag struct {
+	Type     string `json:"type"`
+	Severity string `json:"severity"`
+	Variable string `json:"variable,omitempty"`
+}
+
 // Snapshot represents a captured code state
 type Snapshot struct {
 	BreakpointID   string                 `json:"breakpoint_id"`
@@ -53,6 +61,7 @@ type Snapshot struct {
 	FilePath       string                 `json:"file_path"`
 	LineNumber     int                    `json:"line_number"`
 	Variables      map[string]interface{} `json:"variables"`
+	SecurityFlags  []SecurityFlag         `json:"security_flags,omitempty"`
 	StackTrace     string                 `json:"stack_trace"`
 	TraceID        string                 `json:"trace_id,omitempty"`
 	SpanID         string                 `json:"span_id,omitempty"`
@@ -196,15 +205,19 @@ func (c *SnapshotClient) CheckAndCapture(filePath string, lineNumber int, variab
 	n := runtime.Stack(buf, false)
 	stackTrace := string(buf[:n])
 
+	// Scan variables for security issues
+	sanitizedVars, securityFlags := c.scanForSecurityIssues(variables)
+
 	// Create snapshot
 	snapshot := Snapshot{
-		BreakpointID: bp.ID,
-		ServiceName:  c.serviceName,
-		FilePath:     filePath,
-		LineNumber:   lineNumber,
-		Variables:    variables,
-		StackTrace:   stackTrace,
-		CapturedAt:   time.Now(),
+		BreakpointID:  bp.ID,
+		ServiceName:   c.serviceName,
+		FilePath:      filePath,
+		LineNumber:    lineNumber,
+		Variables:     sanitizedVars,
+		SecurityFlags: securityFlags,
+		StackTrace:    stackTrace,
+		CapturedAt:    time.Now(),
 	}
 
 	// TODO: Extract trace/span ID from context if available
@@ -284,13 +297,17 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, label s
 	// Extract HTTP request context if available
 	requestContext := c.extractRequestContext(ctx)
 
+	// Scan variables for security issues
+	sanitizedVars, securityFlags := c.scanForSecurityIssues(variables)
+
 	// Create snapshot
 	snapshot := Snapshot{
 		BreakpointID:   bp.ID,
 		ServiceName:    c.serviceName,
 		FilePath:       file,
 		LineNumber:     line,
-		Variables:      variables,
+		Variables:      sanitizedVars,
+		SecurityFlags:  securityFlags,
 		StackTrace:     stackTrace,
 		TraceID:        traceID,
 		SpanID:         spanID,
@@ -394,4 +411,62 @@ func (c *SnapshotClient) extractRequestContext(ctx context.Context) map[string]i
 		}
 	}
 	return nil
+}
+
+// scanForSecurityIssues scans variables for sensitive data and returns sanitized variables with security flags
+func (c *SnapshotClient) scanForSecurityIssues(variables map[string]interface{}) (map[string]interface{}, []SecurityFlag) {
+	// Sensitive data patterns
+	sensitivePatterns := map[string]*regexp.Regexp{
+		"password":    regexp.MustCompile(`(?i)(password|passwd|pwd)\s*[=:]\s*["']?[^\s"']{6,}`),
+		"api_key":     regexp.MustCompile(`(?i)(api[_-]?key|apikey)\s*[=:]\s*["']?[A-Za-z0-9_-]{20,}`),
+		"jwt":         regexp.MustCompile(`eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*`),
+		"credit_card": regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14})\b`),
+	}
+
+	// Variable name pattern for sensitive keywords
+	sensitiveNamePattern := regexp.MustCompile(`(?i)(password|secret|token|key|credential)`)
+
+	var securityFlags []SecurityFlag
+	sanitized := make(map[string]interface{})
+
+	// Copy variables and scan
+	for name, value := range variables {
+		// Check variable name for sensitive patterns
+		if sensitiveNamePattern.MatchString(name) {
+			securityFlags = append(securityFlags, SecurityFlag{
+				Type:     "sensitive_variable_name",
+				Severity: "medium",
+				Variable: name,
+			})
+			sanitized[name] = "[REDACTED]"
+			continue
+		}
+
+		// Check variable value for sensitive data
+		serialized, err := json.Marshal(value)
+		if err != nil {
+			sanitized[name] = fmt.Sprintf("[%T]", value)
+			continue
+		}
+
+		flagged := false
+		for dataType, pattern := range sensitivePatterns {
+			if pattern.Match(serialized) {
+				securityFlags = append(securityFlags, SecurityFlag{
+					Type:     fmt.Sprintf("sensitive_data_%s", dataType),
+					Severity: "high",
+					Variable: name,
+				})
+				sanitized[name] = "[REDACTED]"
+				flagged = true
+				break
+			}
+		}
+
+		if !flagged {
+			sanitized[name] = value
+		}
+	}
+
+	return sanitized, securityFlags
 }
