@@ -1,6 +1,7 @@
 package tracekit
 
 import (
+	"net"
 	"net/http"
 	"strings"
 
@@ -10,11 +11,38 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// clientIPMiddleware adds client IP to the current span
+type clientIPMiddleware struct {
+	handler http.Handler
+}
+
+// ServeHTTP adds the client IP attribute to the span
+func (m *clientIPMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Extract client IP
+	clientIP := ExtractClientIP(r)
+
+	// Add to current span if valid
+	if clientIP != "" {
+		span := trace.SpanFromContext(r.Context())
+		if span.SpanContext().IsValid() {
+			span.SetAttributes(attribute.String("http.client_ip", clientIP))
+		}
+	}
+
+	// Continue to the next handler
+	m.handler.ServeHTTP(w, r)
+}
+
 // HTTPHandler wraps an http.Handler with OpenTelemetry instrumentation
+// and automatically captures client IP address
 func (s *SDK) HTTPHandler(handler http.Handler, operation string) http.Handler {
-	return otelhttp.NewHandler(handler, operation,
+	// Wrap with OTEL instrumentation
+	otelHandler := otelhttp.NewHandler(handler, operation,
 		otelhttp.WithTracerProvider(s.tracerProvider),
 	)
+
+	// Wrap with client IP middleware
+	return &clientIPMiddleware{handler: otelHandler}
 }
 
 // HTTPMiddleware returns a middleware function for standard http.Handler chains
@@ -142,4 +170,47 @@ func extractServiceName(hostname string) string {
 	}
 
 	return hostname
+}
+
+// ExtractClientIP extracts the client IP address from an HTTP request.
+// It checks X-Forwarded-For, X-Real-IP headers (for proxied requests)
+// and falls back to RemoteAddr.
+// This function is used by the HTTP middleware to automatically add client IP to traces.
+func ExtractClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header (for requests behind proxy/load balancer)
+	// Format: "client, proxy1, proxy2"
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Take the first IP (the client)
+		ips := strings.Split(xff, ",")
+		if len(ips) > 0 {
+			clientIP := strings.TrimSpace(ips[0])
+			// Validate it's a valid IP
+			if net.ParseIP(clientIP) != nil {
+				return clientIP
+			}
+		}
+	}
+
+	// Check X-Real-IP header (alternative proxy header)
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		xri = strings.TrimSpace(xri)
+		if net.ParseIP(xri) != nil {
+			return xri
+		}
+	}
+
+	// Fallback to RemoteAddr (direct connection)
+	// RemoteAddr format: "IP:port" or "[IPv6]:port"
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// If SplitHostPort fails, try using RemoteAddr as-is
+		ip = r.RemoteAddr
+	}
+
+	// Validate and return
+	if net.ParseIP(ip) != nil {
+		return ip
+	}
+
+	return ""
 }

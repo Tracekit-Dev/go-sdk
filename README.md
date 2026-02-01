@@ -50,6 +50,7 @@ sdk.WrapRedis(redisClient)
 - ✅ MongoDB instrumentation
 - ✅ gRPC interceptors (client & server)
 - ✅ Custom spans, events, and attributes
+- ✅ **Automatic client IP capture** (for DDoS & traffic analysis)
 
 ### 🔍 **Code Monitoring** (Live Production Debugging)
 - ✅ Non-breaking breakpoints

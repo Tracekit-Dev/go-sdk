@@ -3,6 +3,8 @@ package tracekit
 import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // contextKey is a custom type for context keys to avoid collisions
@@ -11,18 +13,32 @@ type contextKey string
 const requestContextKey contextKey = "tracekit.request_context"
 
 // GinMiddleware returns a Gin middleware with OpenTelemetry instrumentation
-// It also captures request context for code monitoring
+// It captures request context for code monitoring and adds client IP to spans
 func (s *SDK) GinMiddleware() gin.HandlerFunc {
-	otelMiddleware := otelgin.Middleware(s.config.ServiceName,
-		otelgin.WithTracerProvider(s.tracerProvider),
-	)
-
 	return func(c *gin.Context) {
+		// Extract client IP before creating span
+		clientIP := ExtractClientIP(c.Request)
+
 		// Capture request context for code monitoring
 		requestContext := extractGinRequestContext(c)
 
 		// Store in gin context for later retrieval
 		c.Set(string(requestContextKey), requestContext)
+
+		// Create OTEL middleware with client IP as a span attribute
+		// We need to create it per-request so we can include the IP
+		opts := []otelgin.Option{
+			otelgin.WithTracerProvider(s.tracerProvider),
+		}
+
+		// Add client IP as initial span attribute if available
+		if clientIP != "" {
+			opts = append(opts, otelgin.WithSpanStartOptions(
+				trace.WithAttributes(attribute.String("http.client_ip", clientIP)),
+			))
+		}
+
+		otelMiddleware := otelgin.Middleware(s.config.ServiceName, opts...)
 
 		// Call OTEL middleware
 		otelMiddleware(c)
