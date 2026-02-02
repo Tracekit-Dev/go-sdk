@@ -92,12 +92,12 @@ func resolveEndpoint(endpoint, path string, useSSL bool) string {
 
 		// If there's a "/" after the host, it has a real path
 		if strings.Contains(trimmed, "/") {
-			// If path is empty, extract base URL (scheme + host only)
+			// Always extract base URL and append correct path
+			base := extractBaseURL(endpoint)
 			if path == "" {
-				return extractBaseURL(endpoint)
+				return base
 			}
-			// Otherwise use as-is
-			return endpoint
+			return base + path
 		}
 
 		// Just host (possibly had trailing /), add the path
