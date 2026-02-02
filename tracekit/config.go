@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -28,10 +29,14 @@ type Config struct {
 	ServiceName string
 
 	// Optional - defaults to app.tracekit.dev
+	// Can be just the host (app.tracekit.dev) or full URL
 	Endpoint string
 
 	// Optional - defaults to /v1/traces
 	TracesPath string
+
+	// Optional - defaults to /v1/metrics
+	MetricsPath string
 
 	// Optional - defaults to true (use TLS)
 	UseSSL bool
@@ -65,11 +70,90 @@ type Config struct {
 
 // SDK is the main TraceKit SDK client
 type SDK struct {
-	config         *Config
-	tracer         trace.Tracer
-	tracerProvider *sdktrace.TracerProvider
-	snapshotClient *SnapshotClient
-	localUIEnabled bool
+	config          *Config
+	tracer          trace.Tracer
+	tracerProvider  *sdktrace.TracerProvider
+	snapshotClient  *SnapshotClient
+	metricsRegistry *metricsRegistry
+	localUIEnabled  bool
+}
+
+// resolveEndpoint builds the full endpoint URL from base endpoint and path
+func resolveEndpoint(endpoint, path string, useSSL bool) string {
+	// If endpoint already has a scheme
+	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		// Strip trailing slash if present
+		endpoint = strings.TrimSuffix(endpoint, "/")
+
+		// Check if endpoint already has a path component (anything after the host)
+		// e.g., "http://localhost:8081/v1/traces" or "http://localhost:8081/custom"
+		trimmed := strings.TrimPrefix(endpoint, "https://")
+		trimmed = strings.TrimPrefix(trimmed, "http://")
+
+		// If there's a "/" after the host, it has a real path
+		if strings.Contains(trimmed, "/") {
+			// If path is empty, extract base URL (scheme + host only)
+			if path == "" {
+				return extractBaseURL(endpoint)
+			}
+			// Otherwise use as-is
+			return endpoint
+		}
+
+		// Just host (possibly had trailing /), add the path
+		return endpoint + path
+	}
+
+	// Build URL with scheme
+	scheme := "https://"
+	if !useSSL {
+		scheme = "http://"
+	}
+
+	// Strip trailing slash from endpoint if present
+	endpoint = strings.TrimSuffix(endpoint, "/")
+
+	return scheme + endpoint + path
+}
+
+// extractBaseURL extracts scheme + host from a full URL, but only if it contains
+// known service-specific paths like /v1/traces or /v1/metrics.
+// This prevents extracting base from custom base paths like /api or /custom.
+// e.g., "http://localhost:8081/v1/traces" -> "http://localhost:8081"
+// e.g., "http://localhost:8081/custom" -> "http://localhost:8081/custom" (kept as-is)
+func extractBaseURL(fullURL string) string {
+	// Check if URL contains known service-specific paths
+	hasServicePath := strings.Contains(fullURL, "/v1/traces") ||
+		strings.Contains(fullURL, "/v1/metrics") ||
+		strings.Contains(fullURL, "/api/v1/traces") ||
+		strings.Contains(fullURL, "/api/v1/metrics")
+
+	// If it doesn't have a service-specific path, keep the URL as-is
+	// (it's likely a custom base path like /custom or /api)
+	if !hasServicePath {
+		return fullURL
+	}
+
+	// Extract scheme
+	var scheme string
+	remaining := fullURL
+	if strings.HasPrefix(fullURL, "https://") {
+		scheme = "https://"
+		remaining = strings.TrimPrefix(fullURL, "https://")
+	} else if strings.HasPrefix(fullURL, "http://") {
+		scheme = "http://"
+		remaining = strings.TrimPrefix(fullURL, "http://")
+	} else {
+		return fullURL // No scheme, return as-is
+	}
+
+	// Find first "/" to separate host from path
+	if idx := strings.Index(remaining, "/"); idx != -1 {
+		return scheme + remaining[:idx]
+	}
+
+	// No path, return as-is
+	return scheme + remaining
 }
 
 // detectLocalUI checks if TraceKit Local UI is running
@@ -192,6 +276,9 @@ func NewSDK(config *Config) (*SDK, error) {
 	if config.TracesPath == "" {
 		config.TracesPath = "/v1/traces"
 	}
+	if config.MetricsPath == "" {
+		config.MetricsPath = "/v1/metrics"
+	}
 	if config.ServiceVersion == "" {
 		config.ServiceVersion = "1.0.0"
 	}
@@ -204,6 +291,10 @@ func NewSDK(config *Config) (*SDK, error) {
 	if config.CodeMonitoringPollInterval == 0 {
 		config.CodeMonitoringPollInterval = 30 * time.Second
 	}
+
+	// Resolve full endpoint URLs
+	tracesEndpoint := resolveEndpoint(config.Endpoint, config.TracesPath, config.UseSSL)
+	metricsEndpoint := resolveEndpoint(config.Endpoint, config.MetricsPath, config.UseSSL)
 
 	sdk := &SDK{
 		config: config,
@@ -218,22 +309,21 @@ func NewSDK(config *Config) (*SDK, error) {
 	}
 
 	// Initialize tracer
-	if err := sdk.initTracer(); err != nil {
+	if err := sdk.initTracer(tracesEndpoint); err != nil {
 		return nil, fmt.Errorf("failed to initialize tracer: %w", err)
 	}
 
+	// Initialize metrics registry
+	sdk.metricsRegistry = newMetricsRegistry(metricsEndpoint, config.APIKey, config.ServiceName)
+
 	// Initialize code monitoring if enabled
 	if config.EnableCodeMonitoring {
-		endpoint := config.Endpoint
-		if config.UseSSL {
-			endpoint = "https://" + endpoint
-		} else {
-			endpoint = "http://" + endpoint
-		}
+		// Snapshot client needs base URL (without path)
+		snapshotEndpoint := resolveEndpoint(config.Endpoint, "", config.UseSSL)
 
 		sdk.snapshotClient = NewSnapshotClient(
 			config.APIKey,
-			endpoint,
+			snapshotEndpoint,
 			config.ServiceName,
 		)
 		sdk.snapshotClient.Start()
@@ -244,21 +334,42 @@ func NewSDK(config *Config) (*SDK, error) {
 }
 
 // initTracer initializes the OpenTelemetry tracer
-func (s *SDK) initTracer() error {
+func (s *SDK) initTracer(tracesEndpoint string) error {
 	ctx := context.Background()
+
+	// Parse the traces endpoint to extract host and path
+	var endpoint, urlPath string
+	var useSSL bool
+
+	if strings.HasPrefix(tracesEndpoint, "https://") {
+		useSSL = true
+		tracesEndpoint = strings.TrimPrefix(tracesEndpoint, "https://")
+	} else if strings.HasPrefix(tracesEndpoint, "http://") {
+		useSSL = false
+		tracesEndpoint = strings.TrimPrefix(tracesEndpoint, "http://")
+	}
+
+	// Split host and path
+	parts := strings.SplitN(tracesEndpoint, "/", 2)
+	endpoint = parts[0]
+	if len(parts) > 1 {
+		urlPath = "/" + parts[1]
+	} else {
+		urlPath = "/v1/traces"
+	}
 
 	// Configure OTLP exporter
 	var opts []otlptracehttp.Option
 	opts = append(opts,
-		otlptracehttp.WithEndpoint(s.config.Endpoint),
-		otlptracehttp.WithURLPath(s.config.TracesPath),
+		otlptracehttp.WithEndpoint(endpoint),
+		otlptracehttp.WithURLPath(urlPath),
 		otlptracehttp.WithHeaders(map[string]string{
 			"X-API-Key": s.config.APIKey,
 		}),
 	)
 
 	// Configure TLS
-	if s.config.UseSSL {
+	if useSSL {
 		opts = append(opts, otlptracehttp.WithTLSClientConfig(&tls.Config{}))
 	} else {
 		opts = append(opts, otlptracehttp.WithInsecure())
@@ -359,6 +470,10 @@ func (s *SDK) CheckAndCaptureWithContext(ctx context.Context, label string, vari
 func (s *SDK) Shutdown(ctx context.Context) error {
 	if s.snapshotClient != nil {
 		s.snapshotClient.Stop()
+	}
+
+	if s.metricsRegistry != nil {
+		s.metricsRegistry.shutdown()
 	}
 
 	if s.tracerProvider != nil {
