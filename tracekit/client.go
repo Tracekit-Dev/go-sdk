@@ -75,7 +75,7 @@ func NewSnapshotClient(apiKey, baseURL, serviceName string) *SnapshotClient {
 		apiKey:            apiKey,
 		baseURL:           baseURL,
 		serviceName:       serviceName,
-		client:            &http.Client{Timeout: 10 * time.Second},
+		client:            &http.Client{Timeout: 30 * time.Second},
 		stopChan:          make(chan struct{}),
 		breakpointsCache:  make(map[string]*BreakpointConfig),
 		registrationCache: make(map[string]bool),

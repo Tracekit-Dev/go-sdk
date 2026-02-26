@@ -363,6 +363,7 @@ func (s *SDK) initTracer(tracesEndpoint string) error {
 	opts = append(opts,
 		otlptracehttp.WithEndpoint(endpoint),
 		otlptracehttp.WithURLPath(urlPath),
+		otlptracehttp.WithTimeout(30*time.Second),
 		otlptracehttp.WithHeaders(map[string]string{
 			"X-API-Key": s.config.APIKey,
 		}),

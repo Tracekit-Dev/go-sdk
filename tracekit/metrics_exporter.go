@@ -23,7 +23,7 @@ func newMetricsExporter(endpoint, apiKey, serviceName string) *metricsExporter {
 		apiKey:      apiKey,
 		serviceName: serviceName,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 30 * time.Second,
 		},
 	}
 }
