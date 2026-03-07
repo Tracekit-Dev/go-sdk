@@ -527,6 +527,72 @@ Then create a breakpoint in TraceKit UI for `payment.go:42`. When this code runs
 - Request context (trace ID, span ID)
 - Timestamp
 
+### PII Scrubbing
+
+The SDK automatically scans snapshot variables for sensitive data before sending to the backend using `security.ScanVariables()`. This is enabled by default when code monitoring is active.
+
+**Auto-detected patterns:** passwords, API keys, tokens, credit cards, emails, SSNs, JWTs, AWS keys, Stripe keys, private keys.
+
+**Name-based redaction** — Variables with sensitive names are redacted as `[REDACTED:sensitive_name]`:
+
+```go
+// Input: {"password": "hunter2", "api_key": "sk-abc123"}
+// Output: {"password": "[REDACTED:sensitive_name]", "api_key": "[REDACTED:sensitive_name]"}
+```
+
+Matched names: `password`, `passwd`, `pwd`, `secret`, `token`, `key`, `credential`, `api_key`, `apikey`. Uses letter-based boundaries (not `\b`) to correctly match names like `api_key` and `user_token`.
+
+**Value-based redaction** — Values matching known patterns are redacted as `[REDACTED:type]`:
+
+```go
+// Input: {"card": "4111-1111-1111-1111"}
+// Output: {"card": "[REDACTED:credit_card]"}
+```
+
+### Kill Switch
+
+Server-side toggle to disable code monitoring per service. Controlled entirely from the TraceKit dashboard or API — no code changes needed.
+
+```bash
+# Disable code monitoring for a service
+curl -X POST https://app.tracekit.dev/api/services/my-service/kill-switch \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+```
+
+- When enabled, the SDK stops capturing snapshots immediately
+- Polling frequency reduces to 60s
+- When disabled, captures resume automatically
+
+### SSE Real-time Updates
+
+The SDK auto-discovers an SSE endpoint from the poll response. Once connected, breakpoint changes (create/update/delete) and kill switch events are received instantly without waiting for the next poll cycle.
+
+- Falls back to polling if the SSE connection fails
+- Reconnects automatically on disconnect
+- No configuration required — works out of the box when code monitoring is enabled
+
+### Circuit Breaker
+
+Protects the host application if the TraceKit backend becomes unreachable.
+
+- After **3 capture failures** within **60 seconds**, code monitoring pauses automatically
+- Resumes after a **5-minute** cooldown period
+- Configurable via `CircuitBreakerConfig`:
+
+```go
+sdk, _ := tracekit.NewSDK(&tracekit.Config{
+    APIKey:               os.Getenv("TRACEKIT_API_KEY"),
+    ServiceName:          "my-service",
+    EnableCodeMonitoring: true,
+    CircuitBreakerConfig: &tracekit.CircuitBreakerConfig{
+        FailureThreshold: 5,              // failures before opening
+        FailureWindow:    2 * time.Minute, // window for counting failures
+        CooldownPeriod:   10 * time.Minute,// wait before retrying
+    },
+})
+```
+
 ---
 
 ## Complete Example
