@@ -161,8 +161,9 @@ type SnapshotClient struct {
 	eventsMu      sync.Mutex
 
 	// Kill switch: server-initiated monitoring disable
-	killSwitchActive bool
+	killSwitchActive   bool
 	normalPollInterval time.Duration
+	killSwitchChan     chan bool // signals poll loop to reset ticker immediately
 
 	// SSE (Server-Sent Events) real-time updates
 	sseEndpoint string
@@ -239,6 +240,7 @@ func NewSnapshotClient(apiKey, baseURL, serviceName string) *SnapshotClient {
 		registrationCache:  make(map[string]bool),
 		cb:                 newCircuitBreaker(nil),
 		normalPollInterval: 30 * time.Second,
+		killSwitchChan:     make(chan bool, 1),
 	}
 	c.initPIIPatterns()
 	return c
@@ -302,6 +304,15 @@ func (c *SnapshotClient) pollBreakpoints() {
 		select {
 		case <-c.stopChan:
 			return
+		case killed := <-c.killSwitchChan:
+			// Immediately adjust ticker when kill switch state changes via SSE
+			if killed && !wasKilled {
+				ticker.Reset(60 * time.Second)
+				wasKilled = true
+			} else if !killed && wasKilled {
+				ticker.Reset(c.normalPollInterval)
+				wasKilled = false
+			}
 		case <-ticker.C:
 			// Skip polling when SSE is actively connected (SSE handles updates)
 			if c.sseActive {
@@ -311,7 +322,7 @@ func (c *SnapshotClient) pollBreakpoints() {
 				log.Printf("⚠️  Failed to fetch breakpoints: %v", err)
 			}
 
-			// Adjust poll interval when kill switch state changes
+			// Adjust poll interval when kill switch state changes (from poll response)
 			if c.killSwitchActive && !wasKilled {
 				ticker.Reset(60 * time.Second)
 				wasKilled = true
@@ -544,6 +555,11 @@ func (c *SnapshotClient) handleSSEEvent(eventType string, data string) {
 			return
 		}
 		c.killSwitchActive = ksData.Enabled
+		// Signal poll loop to reset ticker immediately
+		select {
+		case c.killSwitchChan <- ksData.Enabled:
+		default:
+		}
 		if ksData.Enabled {
 			log.Println("TraceKit: Kill switch enabled via SSE, closing connection")
 			if c.sseCancel != nil {
@@ -551,8 +567,8 @@ func (c *SnapshotClient) handleSSEEvent(eventType string, data string) {
 			}
 		}
 
-	case "heartbeat":
-		// No action needed -- keeps connection alive
+	case "heartbeat", "sdk_count":
+		// No action needed -- heartbeat keeps connection alive, sdk_count is for dashboard UI
 
 	default:
 		log.Printf("TraceKit: unknown SSE event type: %s", eventType)
