@@ -730,7 +730,7 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, label s
 	traceID := ""
 	spanID := ""
 	span := trace.SpanFromContext(ctx)
-	if span.SpanContext().IsValid() {
+	if span.SpanContext().IsValid() && span.SpanContext().IsSampled() {
 		traceID = span.SpanContext().TraceID().String()
 		spanID = span.SpanContext().SpanID().String()
 	}
