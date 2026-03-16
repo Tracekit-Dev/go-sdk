@@ -66,6 +66,11 @@ type Config struct {
 	// Useful for mapping localhost URLs to actual service names
 	// Example: map[string]string{"localhost:8084": "node-test-app", "localhost:8082": "go-test-app"}
 	ServiceNameMappings map[string]string
+
+	// Optional - LLM instrumentation configuration
+	// When set, NewLLMTransport will use these settings.
+	// If nil, DefaultLLMConfig() is used.
+	InstrumentLLM *LLMConfig
 }
 
 // SDK is the main TraceKit SDK client
@@ -441,6 +446,38 @@ func (s *SDK) initTracer(tracesEndpoint string) error {
 // Tracer returns the underlying OpenTelemetry tracer
 func (s *SDK) Tracer() trace.Tracer {
 	return s.tracer
+}
+
+// NewLLMTransport creates an LLM-instrumented HTTP transport using
+// this SDK's tracer and LLM configuration. If base is nil,
+// http.DefaultTransport is used.
+//
+// Usage with OpenAI Go SDK:
+//
+//	transport := sdk.NewLLMTransport(nil)
+//	httpClient := &http.Client{Transport: transport}
+//	openaiClient := openai.NewClient(option.WithHTTPClient(httpClient))
+func (s *SDK) NewLLMTransport(base http.RoundTripper, opts ...LLMOption) *LLMTransport {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+
+	cfg := DefaultLLMConfig()
+	if s.config.InstrumentLLM != nil {
+		cfg = *s.config.InstrumentLLM
+	}
+
+	t := &LLMTransport{
+		base:   base,
+		tracer: s.tracer,
+		config: cfg,
+	}
+
+	for _, opt := range opts {
+		opt(t)
+	}
+
+	return t
 }
 
 // SnapshotClient returns the code monitoring client (nil if not enabled)
