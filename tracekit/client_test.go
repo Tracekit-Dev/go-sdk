@@ -1,6 +1,7 @@
 package tracekit
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -92,22 +93,19 @@ func TestPerBreakpointMaxDepth(t *testing.T) {
 		t.Errorf("expected flat=top-level, got %v", result["flat"])
 	}
 
-	// level0 -> level1 should exist, level2 should be truncated
+	// Root map is depth 0, level0's value is recursed at depth 1,
+	// level1's value is recursed at depth 2 which hits the limit.
+	// So level0 should be a map, but level0["level1"] should be the truncation indicator.
 	l0, ok := result["level0"].(map[string]interface{})
 	if !ok {
 		t.Fatal("level0 should be a map")
 	}
 	l1, ok := l0["level1"].(map[string]interface{})
 	if !ok {
-		t.Fatal("level1 should be a map")
+		t.Fatal("level1 should be a truncation indicator map")
 	}
-	// At depth 2, the value should be a truncation indicator
-	l2, ok := l1["level2"].(map[string]interface{})
-	if !ok {
-		t.Fatal("level2 should be a truncation indicator map")
-	}
-	if l2["_truncated"] != true {
-		t.Errorf("expected _truncated=true at depth 2, got %v", l2["_truncated"])
+	if l1["_truncated"] != true {
+		t.Errorf("expected _truncated=true at depth 2, got %v", l1)
 	}
 }
 
@@ -115,10 +113,10 @@ func TestPerBreakpointMaxDepth(t *testing.T) {
 func TestPerBreakpointMaxPayload(t *testing.T) {
 	client := NewSnapshotClient("test-key", "http://localhost", "test-service")
 
-	// Create a snapshot with large variables
+	// Create a snapshot with large variables (unique keys to ensure large payload)
 	largeVars := make(map[string]interface{})
 	for i := 0; i < 100; i++ {
-		largeVars[strings.Repeat("k", 10)] = strings.Repeat("v", 100)
+		largeVars[fmt.Sprintf("key_%03d_%s", i, strings.Repeat("k", 10))] = strings.Repeat("v", 100)
 	}
 
 	snapshot := Snapshot{

@@ -661,13 +661,18 @@ func (c *SnapshotClient) CheckAndCapture(filePath string, lineNumber int, variab
 		// If result is true, proceed with capture
 	}
 
-	// Apply opt-in capture limits
-	variables = c.applyCaptureConfig(variables)
+	// Logpoint mode: capture only expression results, skip locals/stack/request
+	if bp.Mode == "logpoint" {
+		snapshot := buildLogpointSnapshot(bp, c.serviceName, filePath, lineNumber, variables)
+		go c.captureSnapshotWithLimits(snapshot, bp.MaxPayloadBytes)
+		return
+	}
 
-	// Capture stack trace
-	buf := make([]byte, 4096)
-	n := runtime.Stack(buf, false)
-	stackTrace := string(buf[:n])
+	// Apply per-breakpoint capture limits (with SDK-level fallback)
+	variables = c.applyCaptureConfigWithOverrides(variables, bp.MaxDepth, bp.MaxPayloadBytes)
+
+	// Capture stack trace with dynamic buffer and per-breakpoint depth
+	stackTrace := captureStackTraceWithDepth(bp.StackDepth)
 
 	// Scan variables for security issues
 	sanitizedVars, securityFlags := c.scanForSecurityIssues(variables)
@@ -684,10 +689,8 @@ func (c *SnapshotClient) CheckAndCapture(filePath string, lineNumber int, variab
 		CapturedAt:    time.Now(),
 	}
 
-	// TODO: Extract trace/span ID from context if available
-
 	// Send snapshot to backend (non-blocking)
-	go c.captureSnapshot(snapshot)
+	go c.captureSnapshotWithLimits(snapshot, bp.MaxPayloadBytes)
 }
 
 // CheckAndCaptureWithContext checks and captures with trace context
@@ -780,11 +783,6 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, label s
 		}
 	}
 
-	// Capture stack trace
-	buf := make([]byte, 4096)
-	n := runtime.Stack(buf, false)
-	stackTrace := string(buf[:n])
-
 	// Extract trace/span IDs from OpenTelemetry context
 	traceID := ""
 	spanID := ""
@@ -804,11 +802,23 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, label s
 		}
 	}
 
+	// Logpoint mode: capture only expression results, skip locals/stack/request
+	if bp.Mode == "logpoint" {
+		snapshot := buildLogpointSnapshot(bp, c.serviceName, file, line, variables)
+		snapshot.TraceID = traceID
+		snapshot.SpanID = spanID
+		go c.captureSnapshotWithLimits(snapshot, bp.MaxPayloadBytes)
+		return
+	}
+
+	// Capture stack trace with dynamic buffer and per-breakpoint depth
+	stackTrace := captureStackTraceWithDepth(bp.StackDepth)
+
 	// Extract HTTP request context if available
 	requestContext := c.extractRequestContext(ctx)
 
-	// Apply opt-in capture limits
-	variables = c.applyCaptureConfig(variables)
+	// Apply per-breakpoint capture limits (with SDK-level fallback)
+	variables = c.applyCaptureConfigWithOverrides(variables, bp.MaxDepth, bp.MaxPayloadBytes)
 
 	// Scan variables for security issues
 	sanitizedVars, securityFlags := c.scanForSecurityIssues(variables)
@@ -829,7 +839,7 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, label s
 	}
 
 	// Send snapshot to backend (non-blocking)
-	go c.captureSnapshot(snapshot)
+	go c.captureSnapshotWithLimits(snapshot, bp.MaxPayloadBytes)
 }
 
 // autoRegisterBreakpoint automatically creates or updates a breakpoint
@@ -955,6 +965,12 @@ func (c *SnapshotClient) captureSnapshot(snapshot Snapshot) {
 	}
 
 	log.Printf("📸 Snapshot captured: %s:%d", snapshot.FilePath, snapshot.LineNumber)
+}
+
+// captureSnapshotWithLimits applies per-breakpoint payload limits before sending.
+func (c *SnapshotClient) captureSnapshotWithLimits(snapshot Snapshot, bpMaxPayloadBytes *int) {
+	snapshot = c.applyPayloadLimit(snapshot, bpMaxPayloadBytes)
+	c.captureSnapshot(snapshot)
 }
 
 // queueCircuitBreakerEvent queues a telemetry event to be sent with the next breakpoint poll
@@ -1125,4 +1141,169 @@ func (c *SnapshotClient) limitDepthSlice(data []interface{}, currentDepth int) i
 		}
 	}
 	return result
+}
+
+// captureStackTraceWithDepth captures a stack trace using a dynamically-growing buffer.
+// It starts at 8KB and doubles up to 32KB. If maxDepth is non-nil, it limits the
+// number of captured frames (each frame = function line + file:line line).
+func captureStackTraceWithDepth(maxDepth *int) string {
+	const maxBuf = 32 * 1024 // 32KB safety cap (T-161-04 mitigation)
+	buf := make([]byte, 8*1024)
+	for {
+		n := runtime.Stack(buf, false)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		if len(buf) >= maxBuf {
+			buf = buf[:n]
+			break
+		}
+		newSize := len(buf) * 2
+		if newSize > maxBuf {
+			newSize = maxBuf
+		}
+		buf = make([]byte, newSize)
+	}
+
+	stackTrace := string(buf)
+
+	// If no depth limit, return full trace
+	if maxDepth == nil || *maxDepth <= 0 {
+		return stackTrace
+	}
+
+	// Limit frame count. runtime.Stack format:
+	// Line 0: "goroutine N [running]:"
+	// Line 1: function name
+	// Line 2: file:line +offset
+	// Line 3: function name
+	// Line 4: file:line +offset
+	// ... (2 lines per frame)
+	lines := strings.Split(stackTrace, "\n")
+	if len(lines) < 2 {
+		return stackTrace
+	}
+
+	// Keep header line, then up to maxDepth frame pairs (2 lines each)
+	maxLines := 1 + (*maxDepth * 2)
+	if maxLines >= len(lines) {
+		return stackTrace
+	}
+
+	return strings.Join(lines[:maxLines], "\n")
+}
+
+// applyCaptureConfigWithOverrides applies capture depth limits, preferring per-breakpoint
+// overrides over SDK-level config. bpMaxDepth overrides c.config.CaptureDepth.
+func (c *SnapshotClient) applyCaptureConfigWithOverrides(variables map[string]interface{}, bpMaxDepth *int, bpMaxPayloadBytes *int) map[string]interface{} {
+	depthLimit := 0
+
+	if bpMaxDepth != nil && *bpMaxDepth > 0 {
+		depthLimit = *bpMaxDepth
+	} else if c.config.CaptureDepth > 0 {
+		depthLimit = c.config.CaptureDepth
+	}
+
+	if depthLimit <= 0 {
+		return variables // No depth limit
+	}
+
+	return c.limitDepthWithLimit(variables, 0, depthLimit)
+}
+
+// limitDepthWithLimit truncates nested maps/slices beyond the given depth limit
+func (c *SnapshotClient) limitDepthWithLimit(data map[string]interface{}, currentDepth int, maxDepth int) map[string]interface{} {
+	if currentDepth >= maxDepth {
+		return map[string]interface{}{
+			"_truncated": true,
+			"_depth":     currentDepth,
+		}
+	}
+
+	result := make(map[string]interface{}, len(data))
+	for k, v := range data {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			result[k] = c.limitDepthWithLimit(val, currentDepth+1, maxDepth)
+		case []interface{}:
+			result[k] = c.limitDepthSliceWithLimit(val, currentDepth+1, maxDepth)
+		default:
+			result[k] = v
+		}
+	}
+	return result
+}
+
+// limitDepthSliceWithLimit truncates slices beyond the given depth limit
+func (c *SnapshotClient) limitDepthSliceWithLimit(data []interface{}, currentDepth int, maxDepth int) interface{} {
+	if currentDepth >= maxDepth {
+		return map[string]interface{}{
+			"_truncated": true,
+			"_depth":     currentDepth,
+			"_length":    len(data),
+		}
+	}
+
+	result := make([]interface{}, len(data))
+	for i, v := range data {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			result[i] = c.limitDepthWithLimit(val, currentDepth+1, maxDepth)
+		case []interface{}:
+			result[i] = c.limitDepthSliceWithLimit(val, currentDepth+1, maxDepth)
+		default:
+			result[i] = v
+		}
+	}
+	return result
+}
+
+// applyPayloadLimit checks if serialized snapshot exceeds the byte limit and truncates if needed.
+// Per-breakpoint limit takes precedence over SDK-level limit.
+func (c *SnapshotClient) applyPayloadLimit(snapshot Snapshot, bpMaxPayloadBytes *int) Snapshot {
+	limit := 0
+	if bpMaxPayloadBytes != nil && *bpMaxPayloadBytes > 0 {
+		limit = *bpMaxPayloadBytes
+	} else if c.config.MaxPayload > 0 {
+		limit = c.config.MaxPayload
+	}
+
+	if limit <= 0 {
+		return snapshot
+	}
+
+	body, err := json.Marshal(snapshot)
+	if err != nil {
+		return snapshot
+	}
+
+	if len(body) <= limit {
+		return snapshot
+	}
+
+	snapshot.Variables = map[string]interface{}{
+		"_truncated":    true,
+		"_payload_size": len(body),
+		"_max_payload":  limit,
+		"_truncated_by": "payload_limit",
+	}
+	return snapshot
+}
+
+// buildLogpointSnapshot creates a snapshot for logpoint mode breakpoints.
+// Only expression results are captured -- no local variables, stack trace, or request context.
+func buildLogpointSnapshot(bp *BreakpointConfig, serviceName string, filePath string, lineNumber int, variables map[string]interface{}) Snapshot {
+	exprResults := EvaluateExpressions(bp.CaptureExpressions, variables)
+	return Snapshot{
+		BreakpointID:      bp.ID,
+		ServiceName:       serviceName,
+		FilePath:          filePath,
+		LineNumber:        lineNumber,
+		Variables:         map[string]interface{}{},
+		ExpressionResults: exprResults,
+		StackTrace:        "",
+		RequestContext:    nil,
+		CapturedAt:        time.Now(),
+	}
 }
