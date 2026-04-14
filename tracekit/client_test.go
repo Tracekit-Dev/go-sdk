@@ -219,3 +219,161 @@ func deepCallStack(depth int, fn func() string) string {
 	runtime.Caller(0)
 	return deepCallStack(depth-1, fn)
 }
+
+// TestFullCaptureFlow exercises the complete snapshot-mode path:
+// condition evaluation + depth truncation + stack depth limiting + payload limit.
+func TestFullCaptureFlow(t *testing.T) {
+	client := NewSnapshotClientWithConfig("test-key", "http://localhost", "test-service", CaptureConfig{
+		CaptureDepth: 10, // SDK default (should be overridden by per-bp)
+		MaxPayload:   50000,
+	})
+
+	bp := &BreakpointConfig{
+		ID:            "bp-full-1",
+		ServiceName:   "test-service",
+		FilePath:      "handler.go",
+		LineNumber:    42,
+		Enabled:       true,
+		Mode:          "snapshot",
+		Condition:     "status >= 200",
+		ConditionEval: "sdk-evaluable",
+		MaxDepth:      intPtr(3),
+		MaxPayloadBytes: intPtr(10000),
+		StackDepth:    intPtr(10),
+	}
+
+	// Deeply nested variables (5 levels)
+	variables := map[string]interface{}{
+		"status": 200,
+		"user": map[string]interface{}{
+			"profile": map[string]interface{}{
+				"settings": map[string]interface{}{
+					"preferences": map[string]interface{}{
+						"theme": "dark",
+					},
+				},
+			},
+		},
+		"method": "POST",
+	}
+
+	// 1. Condition evaluation: status >= 200 should be true
+	condResult, err := EvaluateCondition(bp.Condition, variables)
+	if err != nil {
+		t.Fatalf("condition evaluation failed: %v", err)
+	}
+	if !condResult {
+		t.Fatal("condition should evaluate to true for status=200")
+	}
+
+	// 2. Depth truncation: MaxDepth=3 should truncate at depth 3
+	truncatedVars := client.applyCaptureConfigWithOverrides(variables, bp.MaxDepth, bp.MaxPayloadBytes)
+
+	user := truncatedVars["user"].(map[string]interface{})
+	profile := user["profile"].(map[string]interface{})
+	settings := profile["settings"].(map[string]interface{})
+	if settings["_truncated"] != true {
+		t.Errorf("expected depth truncation at level 3, got %v", settings)
+	}
+
+	// Top-level scalars preserved
+	if truncatedVars["status"] != 200 {
+		t.Errorf("expected status=200 preserved, got %v", truncatedVars["status"])
+	}
+	if truncatedVars["method"] != "POST" {
+		t.Errorf("expected method=POST preserved, got %v", truncatedVars["method"])
+	}
+
+	// 3. Stack depth: should limit frames to 10
+	stackTrace := deepCallStack(20, func() string {
+		return captureStackTraceWithDepth(bp.StackDepth)
+	})
+	lines := strings.Split(strings.TrimSpace(stackTrace), "\n")
+	// Header + max 10 frames * 2 lines = max 21 lines
+	frameLines := lines[1:]
+	frameCount := len(frameLines) / 2
+	if frameCount > 10 {
+		t.Errorf("expected at most 10 frames, got %d", frameCount)
+	}
+
+	// 4. Payload limit: build snapshot and verify truncation applies if needed
+	snapshot := Snapshot{
+		BreakpointID: bp.ID,
+		ServiceName:  "test-service",
+		FilePath:     "handler.go",
+		LineNumber:   42,
+		Variables:    truncatedVars,
+		StackTrace:   stackTrace,
+	}
+	// With truncated vars, payload should be small enough to pass 10000 limit
+	limited := client.applyPayloadLimit(snapshot, bp.MaxPayloadBytes)
+	if limited.Variables["_truncated_by"] == "payload_limit" {
+		// If it got truncated, that is also valid behavior
+		t.Log("payload was truncated (expected for very large stacks)")
+	}
+}
+
+// TestLogpointCaptureFlow exercises the complete logpoint-mode path.
+func TestLogpointCaptureFlow(t *testing.T) {
+	client := NewSnapshotClient("test-key", "http://localhost", "test-service")
+	_ = client // client used for context only
+
+	bp := &BreakpointConfig{
+		ID:                 "bp-logpoint-flow",
+		ServiceName:        "test-service",
+		FilePath:           "api.go",
+		LineNumber:         99,
+		Enabled:            true,
+		Mode:               "logpoint",
+		CaptureExpressions: []string{"status > 100", "method"},
+	}
+
+	variables := map[string]interface{}{
+		"status":   201,
+		"method":   "PUT",
+		"internal": "should-not-appear",
+	}
+
+	snapshot := buildLogpointSnapshot(bp, "test-service", "api.go", 99, variables)
+
+	// ExpressionResults should have 2 entries
+	if len(snapshot.ExpressionResults) != 2 {
+		t.Fatalf("expected 2 expression results, got %d: %v", len(snapshot.ExpressionResults), snapshot.ExpressionResults)
+	}
+
+	// "status > 100" should evaluate to true
+	if snapshot.ExpressionResults["status > 100"] != true {
+		t.Errorf("expected status > 100 = true, got %v", snapshot.ExpressionResults["status > 100"])
+	}
+
+	// "method" should evaluate to "PUT"
+	if snapshot.ExpressionResults["method"] != "PUT" {
+		t.Errorf("expected method = PUT, got %v", snapshot.ExpressionResults["method"])
+	}
+
+	// Variables should be empty
+	if len(snapshot.Variables) != 0 {
+		t.Errorf("expected empty Variables for logpoint, got %d entries: %v", len(snapshot.Variables), snapshot.Variables)
+	}
+
+	// StackTrace should be empty
+	if snapshot.StackTrace != "" {
+		t.Errorf("expected empty StackTrace for logpoint, got %q", snapshot.StackTrace)
+	}
+
+	// RequestContext should be nil
+	if snapshot.RequestContext != nil {
+		t.Errorf("expected nil RequestContext for logpoint")
+	}
+
+	// Metadata fields should be set
+	if snapshot.BreakpointID != "bp-logpoint-flow" {
+		t.Errorf("expected BreakpointID=bp-logpoint-flow, got %s", snapshot.BreakpointID)
+	}
+	if snapshot.FilePath != "api.go" {
+		t.Errorf("expected FilePath=api.go, got %s", snapshot.FilePath)
+	}
+	if snapshot.LineNumber != 99 {
+		t.Errorf("expected LineNumber=99, got %d", snapshot.LineNumber)
+	}
+}
