@@ -1,0 +1,616 @@
+{
+  "spec_version": "1.0",
+  "description": "Shared test fixture for TraceKit portable expression subset. All 8 SDKs must pass every test case.",
+  "default_variables": {
+    "method": "GET",
+    "path": "/api/users/123",
+    "status": 200,
+    "headers": {
+      "content_type": "application/json",
+      "authorization": "Bearer token123",
+      "x_request_id": "abc-def-ghi"
+    },
+    "query": {
+      "page": "2",
+      "limit": "50",
+      "filter": "active"
+    },
+    "user": {
+      "id": "user_42",
+      "email": "dev@example.com",
+      "role": "admin",
+      "profile": {
+        "name": "Test User",
+        "age": 30,
+        "verified": true,
+        "tags": ["beta", "internal"]
+      },
+      "settings": null
+    }
+  },
+  "test_cases": [
+    {
+      "id": "comp_01",
+      "category": "comparison",
+      "description": "equals operator with integer",
+      "expression": "status == 200",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "comp_02",
+      "category": "comparison",
+      "description": "not-equals operator with integer (same value)",
+      "expression": "status != 200",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "comp_03",
+      "category": "comparison",
+      "description": "greater-than with integer (false case)",
+      "expression": "status > 400",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "comp_04",
+      "category": "comparison",
+      "description": "greater-than-or-equal with exact match",
+      "expression": "status >= 200",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "comp_05",
+      "category": "comparison",
+      "description": "less-than with integer (true case)",
+      "expression": "status < 300",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "comp_06",
+      "category": "comparison",
+      "description": "less-than-or-equal below value (false case)",
+      "expression": "status <= 199",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "comp_07",
+      "category": "comparison",
+      "description": "equals operator with string",
+      "expression": "method == \"GET\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "comp_08",
+      "category": "comparison",
+      "description": "equals operator with string (false case)",
+      "expression": "method == \"POST\"",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "logic_01",
+      "category": "logical",
+      "description": "AND with two true conditions",
+      "expression": "status == 200 && method == \"GET\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "logic_02",
+      "category": "logical",
+      "description": "OR with one true condition",
+      "expression": "status == 500 || method == \"GET\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "logic_03",
+      "category": "logical",
+      "description": "NOT operator negating true condition",
+      "expression": "!(status == 200)",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "logic_04",
+      "category": "logical",
+      "description": "AND with one false condition",
+      "expression": "status == 200 && method == \"POST\"",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "logic_05",
+      "category": "logical",
+      "description": "OR with both conditions false",
+      "expression": "status > 400 || status < 100",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "logic_06",
+      "category": "logical",
+      "description": "NOT combined with AND",
+      "expression": "!(method == \"POST\") && status == 200",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "arith_01",
+      "category": "arithmetic",
+      "description": "addition with integer",
+      "expression": "status + 100",
+      "variables": null,
+      "expected": 300,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "arith_02",
+      "category": "arithmetic",
+      "description": "subtraction with integer",
+      "expression": "status - 50",
+      "variables": null,
+      "expected": 150,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "arith_03",
+      "category": "arithmetic",
+      "description": "multiplication with integer",
+      "expression": "status * 2",
+      "variables": null,
+      "expected": 400,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "arith_04",
+      "category": "arithmetic",
+      "description": "division with integer",
+      "expression": "status / 2",
+      "variables": null,
+      "expected": 100,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "arith_05",
+      "category": "arithmetic",
+      "description": "arithmetic in comparison context",
+      "expression": "status + 100 > 250",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prop_01",
+      "category": "property_access",
+      "description": "top-level map property via dot notation",
+      "expression": "user.email == \"dev@example.com\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prop_02",
+      "category": "property_access",
+      "description": "nested property access two levels deep",
+      "expression": "user.profile.name == \"Test User\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prop_03",
+      "category": "property_access",
+      "description": "nested integer property comparison",
+      "expression": "user.profile.age > 18",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prop_04",
+      "category": "property_access",
+      "description": "nested boolean property comparison",
+      "expression": "user.profile.verified == true",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prop_05",
+      "category": "property_access",
+      "description": "string property comparison",
+      "expression": "user.role == \"admin\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prop_06",
+      "category": "property_access",
+      "description": "headers map property access",
+      "expression": "headers.content_type == \"application/json\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prop_07",
+      "category": "property_access",
+      "description": "query map property access",
+      "expression": "query.page == \"2\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prop_08",
+      "category": "property_access",
+      "description": "nested integer exact match",
+      "expression": "user.profile.age == 30",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "member_01",
+      "category": "membership",
+      "description": "in operator with existing key",
+      "expression": "\"content_type\" in headers",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "member_02",
+      "category": "membership",
+      "description": "in operator with missing key",
+      "expression": "\"x_custom\" in headers",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "member_03",
+      "category": "membership",
+      "description": "in operator on query map with existing key",
+      "expression": "\"page\" in query",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "member_04",
+      "category": "membership",
+      "description": "in operator on query map with missing key",
+      "expression": "\"sort\" in query",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "null_01",
+      "category": "null_handling",
+      "description": "null property equals nil",
+      "expression": "user.settings == nil",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "null_02",
+      "category": "null_handling",
+      "description": "null property not-equals nil (false)",
+      "expression": "user.settings != nil",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "null_03",
+      "category": "null_handling",
+      "description": "missing property evaluates to nil",
+      "expression": "user.nonexistent == nil",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "null_04",
+      "category": "null_handling",
+      "description": "missing nested property evaluates to nil",
+      "expression": "user.profile.nonexistent == nil",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "null_05",
+      "category": "null_handling",
+      "description": "property access on null returns nil",
+      "expression": "user.settings.theme == nil",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "null_06",
+      "category": "null_handling",
+      "description": "nil property does not equal a string",
+      "expression": "user.settings.theme == \"dark\"",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "null_07",
+      "category": "null_handling",
+      "description": "chained property access on nil returns nil",
+      "expression": "user.settings.deep.nested == nil",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "null_08",
+      "category": "null_handling",
+      "description": "nil equals nil",
+      "expression": "nil == nil",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "coerce_01",
+      "category": "type_coercion",
+      "description": "integer equals integer",
+      "expression": "status == 200",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "coerce_02",
+      "category": "type_coercion",
+      "description": "integer equals float (promotion)",
+      "expression": "user.profile.age == 30.0",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "coerce_03",
+      "category": "type_coercion",
+      "description": "integer equals float with variable override",
+      "expression": "status == 42.0",
+      "variables": {
+        "method": "GET",
+        "path": "/api/users/123",
+        "status": 42,
+        "headers": {},
+        "query": {},
+        "user": {}
+      },
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "coerce_04",
+      "category": "type_coercion",
+      "description": "nil is not false",
+      "expression": "nil == false",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "coerce_05",
+      "category": "type_coercion",
+      "description": "nil is not zero",
+      "expression": "nil == 0",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "coerce_06",
+      "category": "type_coercion",
+      "description": "nil is not empty string",
+      "expression": "nil == \"\"",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "bool_01",
+      "category": "boolean_logic",
+      "description": "bare true literal",
+      "expression": "true",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "bool_02",
+      "category": "boolean_logic",
+      "description": "bare false literal",
+      "expression": "false",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "bool_03",
+      "category": "boolean_logic",
+      "description": "boolean property used as condition",
+      "expression": "user.profile.verified",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "bool_04",
+      "category": "boolean_logic",
+      "description": "negated boolean property",
+      "expression": "!user.profile.verified",
+      "variables": null,
+      "expected": false,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "bool_05",
+      "category": "boolean_logic",
+      "description": "boolean property combined with comparison",
+      "expression": "user.profile.verified && user.role == \"admin\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "bool_06",
+      "category": "boolean_logic",
+      "description": "range check with OR fallback",
+      "expression": "(status >= 200 && status < 300) || method == \"POST\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prec_01",
+      "category": "precedence",
+      "description": "multiplication before addition",
+      "expression": "2 + 3 * 4",
+      "variables": null,
+      "expected": 14,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prec_02",
+      "category": "precedence",
+      "description": "parentheses override precedence",
+      "expression": "(2 + 3) * 4",
+      "variables": null,
+      "expected": 20,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prec_03",
+      "category": "precedence",
+      "description": "AND binds tighter than OR",
+      "expression": "status > 100 && method == \"GET\" || false",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "prec_04",
+      "category": "precedence",
+      "description": "OR evaluated after AND",
+      "expression": "true || false && false",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "str_01",
+      "category": "string",
+      "description": "string concatenation with plus operator",
+      "expression": "method + \" \" + path",
+      "variables": null,
+      "expected": "GET /api/users/123",
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "str_02",
+      "category": "string",
+      "description": "string equality",
+      "expression": "\"hello\" == \"hello\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "str_03",
+      "category": "string",
+      "description": "lexicographic string comparison",
+      "expression": "\"a\" < \"b\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "complex_01",
+      "category": "complex",
+      "description": "multi-condition with nested property and arithmetic",
+      "expression": "user.profile.age * 2 > 50 && status == 200",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "complex_02",
+      "category": "complex",
+      "description": "path check with status range",
+      "expression": "path == \"/api/users/123\" && status >= 200 && status < 300",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "complex_03",
+      "category": "complex",
+      "description": "combined membership and comparison",
+      "expression": "\"authorization\" in headers && user.role == \"admin\"",
+      "variables": null,
+      "expected": true,
+      "classify": "sdk-evaluable"
+    },
+    {
+      "id": "srvonly_01",
+      "category": "server_only",
+      "description": "function call is not portable",
+      "expression": "len(user.profile.tags) > 1",
+      "variables": null,
+      "expected": null,
+      "classify": "server-only"
+    },
+    {
+      "id": "srvonly_02",
+      "category": "server_only",
+      "description": "regex match operator is not portable",
+      "expression": "path matches \"/api/.*\"",
+      "variables": null,
+      "expected": null,
+      "classify": "server-only"
+    },
+    {
+      "id": "srvonly_03",
+      "category": "server_only",
+      "description": "contains function call is not portable",
+      "expression": "contains(user.email, \"@\")",
+      "variables": null,
+      "expected": null,
+      "classify": "server-only"
+    }
+  ]
+}
