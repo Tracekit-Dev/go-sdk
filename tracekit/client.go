@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -183,8 +184,14 @@ type BreakpointConfig struct {
 	MaxCaptures  int                    `json:"max_captures"`
 	CaptureCount int                    `json:"capture_count"`
 	ExpireAt     *time.Time             `json:"expire_at,omitempty"`
-	Enabled      bool                   `json:"enabled"`
-	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	Enabled            bool                   `json:"enabled"`
+	Metadata           map[string]interface{} `json:"metadata,omitempty"`
+	Mode               string                 `json:"mode,omitempty"`                // "snapshot" or "logpoint"
+	StackDepth         *int                   `json:"stack_depth,omitempty"`         // nil = default (full trace)
+	MaxDepth           *int                   `json:"max_depth,omitempty"`           // nil = legacy unlimited
+	MaxPayloadBytes    *int                   `json:"max_payload_bytes,omitempty"`   // nil = legacy unlimited
+	ConditionEval      string                 `json:"condition_eval,omitempty"`      // "sdk-evaluable" or "server-only"
+	CaptureExpressions []string               `json:"capture_expressions,omitempty"` // expressions for logpoint mode
 }
 
 // SecurityFlag represents a security issue found in snapshot variables
@@ -205,8 +212,9 @@ type Snapshot struct {
 	StackTrace     string                 `json:"stack_trace"`
 	TraceID        string                 `json:"trace_id,omitempty"`
 	SpanID         string                 `json:"span_id,omitempty"`
-	RequestContext map[string]interface{} `json:"request_context,omitempty"`
-	CapturedAt     time.Time              `json:"captured_at"`
+	RequestContext    map[string]interface{} `json:"request_context,omitempty"`
+	ExpressionResults map[string]interface{} `json:"expression_results,omitempty"`
+	CapturedAt        time.Time              `json:"captured_at"`
 }
 
 // defaultPIIPatterns returns the standard 13-pattern set for PII/credential detection.
@@ -635,6 +643,24 @@ func (c *SnapshotClient) CheckAndCapture(filePath string, lineNumber int, variab
 		return
 	}
 
+	// Evaluate breakpoint condition locally for sdk-evaluable expressions
+	if bp.Condition != "" && bp.ConditionEval == "sdk-evaluable" {
+		result, err := EvaluateCondition(bp.Condition, variables)
+		if err != nil {
+			if errors.Is(err, ErrUnsupportedExpression) {
+				// Fall through to existing server CheckIn behavior
+				log.Printf("TraceKit: expression classified as sdk-evaluable but failed locally, falling back to server: %v", err)
+			} else {
+				// Other evaluation error, log and fall through to server
+				log.Printf("TraceKit: condition evaluation error, falling back to server: %v", err)
+			}
+		} else if !result {
+			// Condition evaluated to false, skip capture
+			return
+		}
+		// If result is true, proceed with capture
+	}
+
 	// Apply opt-in capture limits
 	variables = c.applyCaptureConfig(variables)
 
@@ -735,6 +761,23 @@ func (c *SnapshotClient) CheckAndCaptureWithContext(ctx context.Context, label s
 	// Check if max captures reached
 	if bp.MaxCaptures > 0 && bp.CaptureCount >= bp.MaxCaptures {
 		return
+	}
+
+	// Evaluate breakpoint condition locally for sdk-evaluable expressions
+	if bp.Condition != "" && bp.ConditionEval == "sdk-evaluable" {
+		// Build evaluation env from variables and request context
+		evalEnv := variables
+		result, err := EvaluateCondition(bp.Condition, evalEnv)
+		if err != nil {
+			if errors.Is(err, ErrUnsupportedExpression) {
+				log.Printf("TraceKit: expression classified as sdk-evaluable but failed locally, falling back to server: %v", err)
+			} else {
+				log.Printf("TraceKit: condition evaluation error, falling back to server: %v", err)
+			}
+		} else if !result {
+			// Condition evaluated to false, skip capture
+			return
+		}
 	}
 
 	// Capture stack trace
